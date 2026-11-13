@@ -7,12 +7,14 @@ TODO と書かれた箇所をすべて実装してください。`pytest -v` で
 """
 import re
 import unicodedata
-from typing import List
+from typing import Annotated, List
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator  # noqa: F401
 
 MAX_PROMPT_CHARS = 2000
 MAX_SUMMARY_WORDS = 150
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 # ---------------------------------------------------------------------------
@@ -30,9 +32,11 @@ class StudentResearchReport(BaseModel):
                Hint: typing.Annotated + StringConstraints
     """
 
-    topic: str = Field(description="The scientific topic analyzed")
-    summary: str = Field(description="Executive summary, 150 words or fewer")
-    key_findings: List[str] = Field(
+    model_config = ConfigDict(extra="forbid")
+
+    topic: NonEmptyStr = Field(description="The scientific topic analyzed")
+    summary: NonEmptyStr = Field(description="Executive summary, 150 words or fewer")
+    key_findings: List[NonEmptyStr] = Field(
         min_length=1, max_length=5, description="1 to 5 non-empty factual findings"
     )
     safety_flag: bool = Field(default=False, description="Whether unsafe content was detected")
@@ -43,6 +47,11 @@ class StudentResearchReport(BaseModel):
         # TODO (A3): Raise ValueError if the summary has MORE than MAX_SUMMARY_WORDS words.
         #            Exactly 150 words must be accepted.
         #            150語を超える場合は ValueError（ちょうど150語は許可）。
+        words = v.split()
+        if len(words) > MAX_SUMMARY_WORDS:
+            raise ValueError(
+                f"Summary exceeds maximum word count: {len(words)} words (max {MAX_SUMMARY_WORDS})"
+            )
         return v
 
 
@@ -58,7 +67,9 @@ def normalize_text(text: str) -> str:
       - strip leading/trailing spaces
     Hint: unicodedata.normalize, re.sub
     """
-    raise NotImplementedError("TODO (B1): normalize_text")
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
 
 
 def detect_prompt_injection(user_prompt: str) -> bool:
@@ -77,7 +88,28 @@ def detect_prompt_injection(user_prompt: str) -> bool:
     Hint: use normalize_text(), then also check a "compact" copy of the text with
           all non-alphanumeric characters removed (str.isalnum keeps Japanese characters).
     """
-    raise NotImplementedError("TODO (B2): detect_prompt_injection")
+    norm = normalize_text(user_prompt)
+    compact = "".join(c for c in norm if c.isalnum())
+
+    injection_patterns = [
+        # Ignore / disregard instructions
+        r"(ignore|disregard)[a-z]{0,25}(previous|prior)instructions",
+        # System override / developer mode / reveal secret key / reveal system prompt
+        r"systemoverride",
+        r"developermode",
+        r"reveal(the)?secretkey",
+        r"(reveal|show|print|display|leak)(the)?systemprompt",
+        # Japanese prompt injection patterns
+        r"(以前|これまで|過去|前).*?指示.*?無視",
+        r"指示.*?(すべて|全部)?.*?無視",
+        r"システムプロンプト.*?(表示|教え|出力|見せ|公開)",
+    ]
+
+    for pattern in injection_patterns:
+        if re.search(pattern, compact):
+            return True
+
+    return False
 
 
 def sanitize_prompt_input(user_prompt: str) -> str:
@@ -92,7 +124,14 @@ def sanitize_prompt_input(user_prompt: str) -> str:
             -> raise ValueError("Security violation: Prompt injection pattern detected.")
       - otherwise return the stripped prompt
     """
-    raise NotImplementedError("TODO (B3): sanitize_prompt_input")
+    stripped = user_prompt.strip()
+    if not stripped:
+        raise ValueError("Prompt cannot be empty.")
+    if len(stripped) > MAX_PROMPT_CHARS:
+        raise ValueError(f"Prompt length exceeds limit ({len(stripped)} > {MAX_PROMPT_CHARS}).")
+    if detect_prompt_injection(stripped):
+        raise ValueError("Security violation: Prompt injection pattern detected.")
+    return stripped
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +147,11 @@ def strip_code_fences(text: str) -> str:
     text stripped. If there is no fence, return the text stripped.
     Markdownのコードフェンスを除去する（フェンスがなければそのまま返す）。
     """
-    raise NotImplementedError("TODO (C1): strip_code_fences")
+    cleaned = text.strip()
+    match = re.match(r"^```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?```$", cleaned, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return cleaned
 
 
 def run_structured_extraction(raw_response: str) -> StudentResearchReport:
@@ -118,4 +161,5 @@ def run_structured_extraction(raw_response: str) -> StudentResearchReport:
 
     TODO (C2): Strip code fences before validating.
     """
-    return StudentResearchReport.model_validate_json(raw_response)
+    cleaned = strip_code_fences(raw_response)
+    return StudentResearchReport.model_validate_json(cleaned)
