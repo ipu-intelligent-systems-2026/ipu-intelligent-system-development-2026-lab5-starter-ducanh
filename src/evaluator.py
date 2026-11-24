@@ -10,19 +10,26 @@ import urllib.request
 from types import SimpleNamespace
 from typing import Annotated
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints  # noqa: F401
 
 from src.guardrails import strip_code_fences  # noqa: F401
 
-load_dotenv()
+
+GEMINI_DEFAULT = "gemini-2.5-flash"
+
+
+def _use_ollama() -> bool:
+    """Return True when the environment points at an Ollama backend."""
+    return bool(os.getenv("OLLAMA_HOST")) or (
+        bool(os.getenv("MODEL_NAME")) and not os.getenv("GEMINI_API_KEY")
+    )
 
 
 def _resolve_default_model() -> str:
-    return (
-        os.getenv("MODEL_NAME", "").strip().strip('"').strip("'")
-        or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    )
+    """Pick the right model name for the active backend."""
+    if _use_ollama():
+        return os.getenv("MODEL_NAME", "").strip().strip('"').strip("'") or GEMINI_DEFAULT
+    return os.getenv("GEMINI_MODEL", GEMINI_DEFAULT)
 
 
 DEFAULT_MODEL = _resolve_default_model()
@@ -120,11 +127,6 @@ class OllamaClient:
             self.host = host
 
         def generate_content(self, model: str, contents: str, config: dict = None):
-            if model == "gemini-2.5-flash" or not model:
-                env_model = os.getenv("MODEL_NAME", "").strip().strip('"').strip("'")
-                if env_model:
-                    model = env_model
-
             url = f"{self.host}/api/generate"
             payload = {
                 "model": model,
@@ -146,11 +148,9 @@ class OllamaClient:
 
 
 def get_default_client():
-    """Return an OllamaClient if OLLAMA_HOST or MODEL_NAME is configured, else google.genai.Client."""
-    ollama_host = os.getenv("OLLAMA_HOST")
-    model_name = os.getenv("MODEL_NAME")
-    if ollama_host or (model_name and not os.getenv("GEMINI_API_KEY")):
-        return OllamaClient(host=ollama_host)
+    """Return an OllamaClient if the environment targets Ollama, else google.genai.Client."""
+    if _use_ollama():
+        return OllamaClient()
     if os.getenv("GEMINI_API_KEY"):
         from google import genai
         return genai.Client()
